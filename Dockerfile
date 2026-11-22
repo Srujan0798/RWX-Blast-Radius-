@@ -11,6 +11,8 @@ RUN git clone https://github.com/tobymao/sqlglot.git /app/sqlglot && \
 COPY src/ /app/src/
 COPY maps/maps.json.z /app/maps/maps.json.z
 COPY maps/type_index.json.z /app/maps/type_index.json.z
+COPY maps/precomputed.json.z /app/maps/precomputed.json.z
+COPY tests.json /app/tests.json
 
 RUN mkdir -p /app/graph_artifacts && python -m src.ast_analyzer > /app/graph_artifacts/ast_metadata.json
 

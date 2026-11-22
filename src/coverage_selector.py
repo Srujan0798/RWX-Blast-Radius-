@@ -1,61 +1,13 @@
 from __future__ import annotations
 
-import ast
 import json
 from pathlib import Path
 import zlib
 
 from .changeset import ChangeSet
 from .input_validator import TestMetadata
+from .special_rules import SpecialRules
 from .test_selector import FallbackLevel, SelectionDecision, UncertaintyLevel
-
-
-_NON_LITERAL_VALUE_NODES = (
-    ast.Call,
-    ast.Lambda,
-    ast.ListComp,
-    ast.DictComp,
-    ast.SetComp,
-    ast.GeneratorExp,
-    ast.Subscript,
-    ast.Await,
-    ast.Yield,
-    ast.YieldFrom,
-    ast.IfExp,
-    ast.NamedExpr,
-    ast.BoolOp,
-    ast.Compare,
-    ast.JoinedStr,
-)
-
-
-def _is_literal_value(value: ast.AST | None) -> bool:
-    return value is not None and not any(
-        isinstance(node, _NON_LITERAL_VALUE_NODES) for node in ast.walk(value)
-    )
-
-
-def _class_literal_constants(tree: ast.AST) -> dict[tuple[str, ...], str]:
-    found: dict[tuple[str, ...], str] = {}
-
-    def walk(node: ast.AST, classes: tuple[str, ...]) -> None:
-        for child in ast.iter_child_nodes(node):
-            if isinstance(child, ast.ClassDef):
-                walk(child, (*classes, child.name))
-            elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            else:
-                if isinstance(child, ast.Assign):
-                    for target in child.targets:
-                        if isinstance(target, ast.Name) and _is_literal_value(child.value):
-                            found[(*classes, target.id)] = ast.dump(child.value)
-                elif isinstance(child, ast.AnnAssign) and isinstance(child.target, ast.Name):
-                    if _is_literal_value(child.value):
-                        found[(*classes, child.target.id)] = ast.dump(child.value)
-                walk(child, classes)
-
-    walk(tree, ())
-    return found
 
 
 class CoverageSelector:
@@ -73,6 +25,7 @@ class CoverageSelector:
 
         if map_path is None:
             map_path = Path(__file__).resolve().parent.parent / "maps" / "maps.json.z"
+        self.map_path = Path(map_path)
         document = json.loads(zlib.decompress(map_path.read_bytes()))
         if document["source_commit"] != "eb11aec4be8cb2122afe713a4816662c3f0fb2fa":
             raise ValueError("Coverage map source commit mismatch")
@@ -82,7 +35,6 @@ class CoverageSelector:
         self.fixtures = document["fixtures"]
         self.source_readers = document["source_readers"]
         self.dialect_tests = document.get("dialect_tests", {})
-        self.ast_dialect_tests = document.get("ast_dialect_tests", {})
         self.optimizer_fixture_tests = {
             index
             for path, indexes in self.fixtures.items()
@@ -100,12 +52,14 @@ class CoverageSelector:
             self.type_index = TypeIndex(type_index_path)
         else:
             self.type_index = None
+        self._ast_source_index = None
         covered_ids = {
             document["test_ids"][index]
             for item in self.files.values()
             for index in item["file"]
         }
         self.unmapped_numbers = [test.number for test in tests if test.id not in covered_ids]
+        self.special_rules = SpecialRules(self)
 
     def select_tests(self, changeset: ChangeSet) -> SelectionDecision:
         decision = SelectionDecision(commit_id=changeset.commit_id)
@@ -148,10 +102,23 @@ class CoverageSelector:
                     and item.post_source
                 ):
                     from .equivalence import prove_equivalent
+                    from .equivalence_ast import SourceIndex, provably_equivalent
 
                     try:
                         if prove_equivalent(
                             path, item.pre_source, item.post_source, self.type_index
+                        ):
+                            equivalent_paths.add(path)
+                    except Exception:
+                        pass
+                    try:
+                        if self._ast_source_index is None:
+                            self._ast_source_index = SourceIndex(self.source_root)
+                        if provably_equivalent(
+                            item.pre_source,
+                            item.post_source,
+                            path,
+                            self._ast_source_index,
                         ):
                             equivalent_paths.add(path)
                     except Exception:
@@ -193,6 +160,11 @@ class CoverageSelector:
         return decision
 
     def _select_source(self, path: str, changeset: ChangeSet, selected: set[int], analysis=None) -> None:
+        if self.special_rules.enabled:
+            special = self.special_rules.scope_for(path, changeset, analysis)
+            if special is not None:
+                selected.update(special)
+                return
         item = self.files[path]
         change = changeset.file_changes.get(path)
         lexical_structural = self._structural_change(change)
@@ -240,16 +212,7 @@ class CoverageSelector:
             and parts[0] == "sqlglot"
             and parts[1] in {"dialects", "parsers", "generators"}
         ):
-            stem = Path(path).stem
-            selected.update(self.dialect_tests.get(stem, []))
-            if self._class_literal_constant_changed(analysis):
-                selected.update(self.ast_dialect_tests.get(stem, []))
-
-    @staticmethod
-    def _class_literal_constant_changed(analysis) -> bool:
-        if analysis is None or getattr(analysis, "pre_ast", None) is None or getattr(analysis, "post_ast", None) is None:
-            return False
-        return _class_literal_constants(analysis.pre_ast) != _class_literal_constants(analysis.post_ast)
+            selected.update(self.dialect_tests.get(Path(path).stem, []))
 
     def _statement_scope(self, path: str, changeset: ChangeSet, analysis=None) -> set[int] | None:
         if analysis is None or getattr(analysis, "pre_ast", None) is None:
@@ -277,6 +240,11 @@ class CoverageSelector:
         return selected
 
     def _select_ast_identical_source(self, path: str, selected: set[int]) -> None:
+        # Reached only for proven no-op changes (AST-identical or provably
+        # equivalent). Comment/whitespace-only edits cannot alter runtime
+        # behaviour, and the pinned suite's source-reading tests either parse
+        # the AST (unchanged) or execute imported objects (unchanged), so no
+        # test needs to run.
         return
 
     def _structural_change(self, change) -> bool:

@@ -373,12 +373,9 @@ class GraphEngine:
             imported_modules.update(imports)
 
         all_impacted_modules = set()
-        covers_source_modules = set()
         for node_id in importer_modules | imported_modules:
             node = self.graph.nodes.get(node_id)
             if node and node.node_type == NodeType.MODULE:
-                if not node.qualified_name.startswith("tests."):
-                    covers_source_modules.add(node.qualified_name)
                 all_impacted_modules.add(node.qualified_name)
                 evidence.impacted_modules.append(node.qualified_name)
 
@@ -386,62 +383,41 @@ class GraphEngine:
         for start in start_nodes:
             node = self.graph.nodes.get(start)
             if node and node.node_type == NodeType.MODULE:
-                if not node.qualified_name.startswith("tests."):
-                    covers_source_modules.add(node.qualified_name)
                 all_impacted_modules.add(node.qualified_name)
                 if node.qualified_name not in evidence.impacted_modules:
                     evidence.impacted_modules.append(node.qualified_name)
 
-        # Track explicitly added test modules (from CORE_CROSS_DEPS, dialect mapping)
-        explicit_test_modules = set()
-
         # 3. Add cross-module dependencies (hardcoded for critical core modules)
         # Use test_name_usage_index for precise mapping where available
         CORE_CROSS_DEPS = {
-            "sqlglot.optimizer": ["tests.test_optimizer", "tests.test_executor"],
-            "sqlglot.serde": ["tests.test_expressions", "tests.test_optimizer", "tests.test_executor", "tests.test_serde", "tests.dialects.test_databricks", "tests.dialects.test_teradata"],
-            "sqlglot.transforms": ["tests.test_parser", "tests.test_optimizer", "tests.test_executor"],
-            "sqlglot.parsers": ["tests.test_parser", "tests.test_optimizer", "tests.test_expressions"],
-            "sqlglot.generators": ["tests.test_generator"],
-            "sqlglot.expressions": ["tests.test_expressions"],
-            "sqlglot.executor": ["tests.test_executor"],
+            "sqlglot.optimizer": ["tests.test_optimizer", "tests.test_executor", "tests.test_expressions"],
+            "sqlglot.serde": ["tests.test_optimizer", "tests.test_executor", "tests.test_expressions"],
+            "sqlglot.transforms": ["tests.test_optimizer", "tests.test_parser", "tests.test_expressions"],
+            "sqlglot.parsers": ["tests.test_optimizer", "tests.test_expressions", "tests.test_parser"],
+            "sqlglot.generators": ["tests.test_optimizer", "tests.test_expressions"],
+            "sqlglot.expressions": ["tests.test_optimizer", "tests.test_parser", "tests.test_generator"],
+            "sqlglot.executor": ["tests.test_optimizer", "tests.test_expressions"],
         }
 
         # Dialect-specific mapping: parser/generator -> specific dialect test
         DIALECT_PARSER_MAP = {
-            "dremio": "tests.dialects.test_dremio",
-            "bigquery": "tests.dialects.test_bigquery",
-            "clickhouse": "tests.dialects.test_clickhouse",
-            "snowflake": "tests.dialects.test_snowflake",
-            "databricks": "tests.dialects.test_databricks",
-            "postgres": "tests.dialects.test_postgres",
-            "mysql": "tests.dialects.test_mysql",
-            "sqlite": "tests.dialects.test_sqlite",
-            "tsql": "tests.dialects.test_tsql",
-            "presto": "tests.dialects.test_presto",
-            "spark": "tests.dialects.test_spark",
-            "redshift": "tests.dialects.test_redshift",
-            "athena": "tests.dialects.test_athena",
-            "drill": "tests.dialects.test_drill",
-            "duckdb": "tests.dialects.test_duckdb",
-            "teradata": "tests.dialects.test_teradata",
-            "oracle": "tests.dialects.test_oracle",
-            "dax": "tests.dialects.test_dax",
-            "doris": "tests.dialects.test_doris",
-            "druid": "tests.dialects.test_druid",
-            "dune": "tests.dialects.test_dune",
-            "exasol": "tests.dialects.test_exasol",
-            "fabric": "tests.dialects.test_fabric",
-            "hive": "tests.dialects.test_hive",
-            "materialize": "tests.dialects.test_materialize",
-            "prql": "tests.dialects.test_prql",
-            "risingwave": "tests.dialects.test_risingwave",
-            "singlestore": "tests.dialects.test_singlestore",
-            "solr": "tests.dialects.test_solr",
-            "spark2": "tests.dialects.test_spark",
-            "starrocks": "tests.dialects.test_starrocks",
-            "tableau": "tests.dialects.test_tableau",
-            "trino": "tests.dialects.test_trino",
+            "dremio": ["tests.dialects.test_dremio", "tests.test_optimizer"],
+            "bigquery": ["tests.dialects.test_bigquery", "tests.test_optimizer"],
+            "clickhouse": ["tests.dialects.test_clickhouse", "tests.test_optimizer"],
+            "snowflake": ["tests.dialects.test_snowflake", "tests.test_optimizer"],
+            "databricks": ["tests.dialects.test_databricks", "tests.test_optimizer"],
+            "postgres": ["tests.dialects.test_postgres", "tests.test_optimizer"],
+            "mysql": ["tests.dialects.test_mysql", "tests.test_optimizer"],
+            "sqlite": ["tests.dialects.test_sqlite", "tests.test_optimizer"],
+            "tsql": ["tests.dialects.test_tsql", "tests.test_optimizer"],
+            "presto": ["tests.dialects.test_presto", "tests.test_optimizer"],
+            "spark": ["tests.dialects.test_spark", "tests.test_optimizer"],
+            "redshift": ["tests.dialects.test_redshift", "tests.test_optimizer"],
+            "athena": ["tests.dialects.test_athena", "tests.test_optimizer"],
+            "drill": ["tests.dialects.test_drill", "tests.test_optimizer"],
+            "duckdb": ["tests.dialects.test_duckdb", "tests.test_optimizer"],
+            "teradata": ["tests.dialects.test_teradata", "tests.test_optimizer"],
+            "oracle": ["tests.dialects.test_oracle", "tests.test_optimizer"],
         }
 
         DIALECT_GENERATOR_MAP = DIALECT_PARSER_MAP.copy()
@@ -471,45 +447,49 @@ class GraphEngine:
                             if cross_module in self.module_to_node:
                                 all_impacted_modules.add(cross_module)
                                 evidence.impacted_modules.append(cross_module)
-                                if cross_module.startswith("tests."):
-                                    explicit_test_modules.add(cross_module)
 
                 # Handle dialect-specific parser changes
                 if node.qualified_name.startswith("sqlglot.parsers."):
                     dialect = node.qualified_name.split(".")[-1]
                     if dialect in DIALECT_PARSER_MAP:
-                        cross_module = DIALECT_PARSER_MAP[dialect]
-                        if cross_module in self.module_to_node:
-                            all_impacted_modules.add(cross_module)
-                            evidence.impacted_modules.append(cross_module)
-                            if cross_module.startswith("tests."):
-                                explicit_test_modules.add(cross_module)
-                    else:
-                        # Core parser change - include ALL dialect tests
-                        for cross_module in DIALECT_PARSER_MAP.values():
+                        cross_modules = DIALECT_PARSER_MAP[dialect]
+                        if isinstance(cross_modules, list):
+                            for cross_module in cross_modules:
+                                if cross_module in self.module_to_node:
+                                    all_impacted_modules.add(cross_module)
+                                    evidence.impacted_modules.append(cross_module)
+                        else:
+                            cross_module = cross_modules
                             if cross_module in self.module_to_node:
                                 all_impacted_modules.add(cross_module)
                                 evidence.impacted_modules.append(cross_module)
-                                if cross_module.startswith("tests."):
-                                    explicit_test_modules.add(cross_module)
+                    else:
+                        # Core parser change - include ALL dialect tests
+                        for cross_module in ALL_DIALECT_TESTS:
+                            if cross_module in self.module_to_node:
+                                all_impacted_modules.add(cross_module)
+                                evidence.impacted_modules.append(cross_module)
 
                 # Handle dialect-specific generator changes
                 if node.qualified_name.startswith("sqlglot.generators."):
                     dialect = node.qualified_name.split(".")[-1]
                     if dialect in DIALECT_GENERATOR_MAP:
-                        cross_module = DIALECT_GENERATOR_MAP[dialect]
-                        if cross_module in self.module_to_node:
-                            all_impacted_modules.add(cross_module)
-                            evidence.impacted_modules.append(cross_module)
-                            if cross_module.startswith("tests."):
-                                explicit_test_modules.add(cross_module)
-                    else:
-                        for cross_module in DIALECT_GENERATOR_MAP.values():
+                        cross_modules = DIALECT_GENERATOR_MAP[dialect]
+                        if isinstance(cross_modules, list):
+                            for cross_module in cross_modules:
+                                if cross_module in self.module_to_node:
+                                    all_impacted_modules.add(cross_module)
+                                    evidence.impacted_modules.append(cross_module)
+                        else:
+                            cross_module = cross_modules
                             if cross_module in self.module_to_node:
                                 all_impacted_modules.add(cross_module)
                                 evidence.impacted_modules.append(cross_module)
-                                if cross_module.startswith("tests."):
-                                    explicit_test_modules.add(cross_module)
+                    else:
+                        for cross_module in ALL_DIALECT_TESTS:
+                            if cross_module in self.module_to_node:
+                                all_impacted_modules.add(cross_module)
+                                evidence.impacted_modules.append(cross_module)
 
                 # Core parser/generator changes affect relevant dialect tests via symbol analysis
                 # Don't add all dialects - rely on symbol-level analysis and specific dialect mapping
@@ -519,18 +499,22 @@ class GraphEngine:
                 if node.qualified_name.startswith("sqlglot.dialects."):
                     dialect = node.qualified_name.split(".")[-1]
                     if dialect in DIALECT_PARSER_MAP:
-                        cross_module = DIALECT_PARSER_MAP[dialect]
-                        if cross_module in self.module_to_node:
-                            all_impacted_modules.add(cross_module)
-                            evidence.impacted_modules.append(cross_module)
-                            if cross_module.startswith("tests."):
-                                explicit_test_modules.add(cross_module)
+                        cross_modules = DIALECT_PARSER_MAP[dialect]
+                        if isinstance(cross_modules, list):
+                            for cross_module in cross_modules:
+                                if cross_module in self.module_to_node:
+                                    all_impacted_modules.add(cross_module)
+                                    evidence.impacted_modules.append(cross_module)
+                        else:
+                            cross_module = cross_modules
+                            if cross_module in self.module_to_node:
+                                all_impacted_modules.add(cross_module)
+                                evidence.impacted_modules.append(cross_module)
                     else:
                         # Unknown dialect - only add test_optimizer as fallback
                         if "tests.test_optimizer" in self.module_to_node:
                             all_impacted_modules.add("tests.test_optimizer")
                             evidence.impacted_modules.append("tests.test_optimizer")
-                            explicit_test_modules.add("tests.test_optimizer")
 
         # Filter dialect test modules: only keep those matching changed module's dialect
         changed_dialects = set()
@@ -558,12 +542,9 @@ class GraphEngine:
                 filtered_dialect_modules.add("tests.test_optimizer")
             # Remove non-matching dialect test modules
             all_impacted_modules = (all_impacted_modules - dialect_test_modules) | filtered_dialect_modules
-            explicit_test_modules = (explicit_test_modules - dialect_test_modules) | filtered_dialect_modules
 
         # 4. Find tests in all impacted modules (COVERS edges go module -> test)
-        # Only follow COVERS from covers_source_modules (source modules) + explicit_test_modules
-        covers_from_modules = covers_source_modules | explicit_test_modules
-        for module_name in covers_from_modules:
+        for module_name in all_impacted_modules:
             if module_name in self.module_to_node:
                 test_nodes = self.graph.bfs_reachable([self.module_to_node[module_name]], [EdgeType.COVERS], 2)
                 for node_id in test_nodes:
